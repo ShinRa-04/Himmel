@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import '../theme/colors.dart';
+import '../models/message.dart';
 
 class MessageBubble extends StatelessWidget {
   final String message;
   final bool isUser;
+  final MessageStatus status; // Add status
 
-  const MessageBubble({super.key, required this.message, required this.isUser});
+  const MessageBubble({
+    super.key, 
+    required this.message, 
+    required this.isUser,
+    this.status = MessageStatus.pending, // Default
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +21,7 @@ class MessageBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end, // Align to bottom for ticks
         mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           if (!isUser) ...[
@@ -29,25 +36,54 @@ class MessageBubble extends StatelessWidget {
             )
           ],
           Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: isUser 
-                    ? (isDark ? AppColors.darkUserBubble : AppColors.lightUserBubble)
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Text(
-                message,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  height: 1.5,
+            child: Column(
+              crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isUser 
+                        ? (isDark ? AppColors.darkUserBubble : AppColors.lightUserBubble)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: SelectableText(
+                    message,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      height: 1.5,
+                    ),
+                  ),
                 ),
-              ),
+                if (isUser) ...[
+                   const SizedBox(height: 4),
+                   _buildStatusIcon(context),
+                ]
+              ],
             ),
           ),
-          if (isUser) const SizedBox(width: 8.0), // Spacer for alignment feeling
+          if (isUser) const SizedBox(width: 8.0),
         ],
       ),
     );
+  }
+
+  Widget _buildStatusIcon(BuildContext context) {
+    IconData icon;
+    Color color = Colors.grey;
+    
+    switch (status) {
+      case MessageStatus.pending:
+        icon = Icons.schedule;
+        break;
+      case MessageStatus.sent:
+        icon = Icons.check;
+        break;
+      case MessageStatus.failed:
+        icon = Icons.error_outline;
+        color = Colors.red;
+        break;
+    }
+
+    return Icon(icon, size: 12, color: color);
   }
 }

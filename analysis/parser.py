@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, computed_field
 # --- CONFIGURATION ---
 DATABASE_FILE = "sms_database.json"
 ADB_CMD = "adb"
+DEVICE_ID = "10BE7H2J7S000T7"  # Add your device ID here if you want to target a specific device
 TARGET_PACKAGE = "com.google.android.apps.messaging"  # As seen in your Android 16 logs
 
 # --- 1. PYDANTIC MODEL ---
@@ -84,8 +85,13 @@ class SMSMonitor:
 
     def fetch_dump(self):
         try:
+            cmd = [ADB_CMD]
+            if DEVICE_ID:
+                cmd.extend(["-s", DEVICE_ID])
+            cmd.extend(['shell', 'dumpsys', 'notification', '--noredact'])
+
             return subprocess.run(
-                [ADB_CMD, 'shell', 'dumpsys', 'notification', '--noredact'],
+                cmd,
                 capture_output=True, text=True, encoding='utf-8', errors='ignore'
             ).stdout
         except:
@@ -148,3 +154,6 @@ class SMSMonitor:
 if __name__ == "__main__":
     monitor = SMSMonitor()
     monitor.start()
+
+
+

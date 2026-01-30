@@ -42,6 +42,13 @@ class AppTheme {
         background: AppColors.lightBackground,
         surface: AppColors.lightSurface,
       ),
+
+      // Text Selection Theme
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: AppColors.lightTextPrimary,
+        selectionColor: Colors.grey.withOpacity(0.3),
+        selectionHandleColor: Colors.grey,
+      ),
     );
   }
 
@@ -84,6 +91,13 @@ class AppTheme {
         secondary: AppColors.accentTeal,
         background: AppColors.darkBackground,
         surface: AppColors.darkSurface,
+      ),
+
+      // Text Selection Theme
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: AppColors.darkTextPrimary,
+        selectionColor: Colors.white.withOpacity(0.3),
+        selectionHandleColor: Colors.white,
       ),
     );
   }

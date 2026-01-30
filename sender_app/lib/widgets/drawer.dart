@@ -3,7 +3,9 @@ import 'package:flutter/services.dart';
 import '../theme/colors.dart';
 
 class CustomDrawer extends StatelessWidget {
-  const CustomDrawer({super.key});
+  final VoidCallback onEditNumber; // New callback
+  
+  const CustomDrawer({super.key, required this.onEditNumber});
 
   @override
   Widget build(BuildContext context) {
@@ -16,7 +18,35 @@ class CustomDrawer extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.zero,
               children: [
-                const SizedBox(height: 50), // Spacing for status bar
+                // ... Header ...
+                const SizedBox(height: 50),
+                 Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                  child: Text(
+                    "Settings",
+                    style: TextStyle(
+                      color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.edit, size: 18),
+                  title: Text(
+                    "Edit Target Number",
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  onTap: () {
+                     HapticFeedback.lightImpact();
+                     Navigator.pop(context); // Close drawer
+                     onEditNumber();
+                  },
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16.0),
+                ),
+                const Divider(),
+                // ... Existing Items ...
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
                   child: Text(
