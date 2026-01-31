@@ -8,7 +8,7 @@ from mobile_monitor import MobileMonitor
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Configure this if you have multiple devices connected
-SERVER_DEVICE_ID = "32001fffe8402687" 
+SERVER_DEVICE_ID = "3C15B5006GX00000" 
 API_PROCESS_URL = "http://127.0.0.1:8000/api/process"
 
 def main():

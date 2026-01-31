@@ -1,7 +1,11 @@
 package com.example.server_app
 
+import android.app.Activity
+import android.app.role.RoleManager
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.provider.Telephony
 import android.util.Base64
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -14,6 +18,11 @@ class MainActivity : FlutterActivity() {
     private var pendingTarget: String? = null
     private var pendingMessage: String? = null
     private var methodChannel: MethodChannel? = null
+    private var pendingDefaultSmsResult: MethodChannel.Result? = null
+    
+    companion object {
+        private const val REQUEST_DEFAULT_SMS = 1001
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -43,6 +52,16 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                 }
+                "isDefaultSmsApp" -> {
+                    val isDefault = isDefaultSmsApp()
+                    Log.d(TAG, "isDefaultSmsApp: $isDefault")
+                    result.success(isDefault)
+                }
+                "requestDefaultSmsApp" -> {
+                    Log.d(TAG, "requestDefaultSmsApp called")
+                    pendingDefaultSmsResult = result
+                    requestDefaultSmsApp()
+                }
                 else -> result.notImplemented()
             }
         }
@@ -50,6 +69,61 @@ class MainActivity : FlutterActivity() {
         // Process initial intent
         Log.d(TAG, "Processing initial intent")
         handleIntent(intent)
+    }
+
+    private fun isDefaultSmsApp(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ uses RoleManager
+            val roleManager = getSystemService(RoleManager::class.java)
+            val isDefault = roleManager.isRoleHeld(RoleManager.ROLE_SMS)
+            Log.d(TAG, "RoleManager check: isRoleHeld(ROLE_SMS) = $isDefault")
+            isDefault
+        } else {
+            // Android 9 and below uses Telephony
+            val defaultSmsPackage = Telephony.Sms.getDefaultSmsPackage(this)
+            val isDefault = defaultSmsPackage == packageName
+            Log.d(TAG, "Telephony check: defaultPackage=$defaultSmsPackage, ourPackage=$packageName, isDefault=$isDefault")
+            isDefault
+        }
+    }
+
+    private fun requestDefaultSmsApp() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ uses RoleManager
+            val roleManager = getSystemService(RoleManager::class.java)
+            if (roleManager.isRoleAvailable(RoleManager.ROLE_SMS)) {
+                if (!roleManager.isRoleHeld(RoleManager.ROLE_SMS)) {
+                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(intent, REQUEST_DEFAULT_SMS)
+                } else {
+                    Log.d(TAG, "Already have SMS role")
+                    pendingDefaultSmsResult?.success(true)
+                    pendingDefaultSmsResult = null
+                }
+            } else {
+                Log.e(TAG, "SMS role not available")
+                pendingDefaultSmsResult?.success(false)
+                pendingDefaultSmsResult = null
+            }
+        } else {
+            // Android 4.4 - 9: Use Telephony.Sms.Intents
+            val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT)
+            intent.putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, packageName)
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQUEST_DEFAULT_SMS)
+        }
+    }
+    
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_DEFAULT_SMS) {
+            val isDefault = isDefaultSmsApp()
+            Log.d(TAG, "Default SMS request result: isDefault=$isDefault")
+            pendingDefaultSmsResult?.success(isDefault)
+            pendingDefaultSmsResult = null
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -93,11 +167,19 @@ class MainActivity : FlutterActivity() {
                 pendingMessage = message
                 
                 // If Flutter engine is ready, send immediately via method channel
-                Log.d(TAG, "Invoking handleIntent on Flutter side")
-                methodChannel?.invokeMethod("handleIntent", mapOf(
-                    "target" to target,
-                    "message" to message
-                ))
+                // and clear pending data to prevent duplicate processing
+                if (methodChannel != null) {
+                    Log.d(TAG, "Invoking handleIntent on Flutter side")
+                    // Clear pending BEFORE invoking to prevent getIntent from returning same data
+                    pendingTarget = null
+                    pendingMessage = null
+                    methodChannel?.invokeMethod("handleIntent", mapOf(
+                        "target" to target,
+                        "message" to message
+                    ))
+                } else {
+                    Log.d(TAG, "Method channel not ready, data stored for getIntent")
+                }
             } else {
                 Log.d(TAG, "Invalid payload: target=$target, msgLen=${message?.length ?: 0}")
             }

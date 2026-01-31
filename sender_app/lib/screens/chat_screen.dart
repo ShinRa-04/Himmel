@@ -18,7 +18,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<Message> _messages = [];
   final ScrollController _scrollController = ScrollController();
   final SmsService _smsService = SmsService();
-  String _targetNumber = "7042505681"; // Default
+  String _targetNumber = "8595819054"; // Default
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {

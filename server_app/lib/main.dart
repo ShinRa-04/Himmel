@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'services/sms_service.dart';
+import 'services/chunked_sms_queue.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -37,53 +37,139 @@ class ServerHomePage extends StatefulWidget {
 class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObserver {
   static const platform = MethodChannel('com.example.server_app/intent');
   
-  final SmsService _smsService = SmsService();
+  late final ChunkedSmsQueue _smsQueue;
   final List<LogEntry> _logs = [];
   
   String _status = "🟡 Initializing...";
   bool _isProcessing = false;
   bool _permissionsGranted = false;
+  bool _isDefaultSmsApp = false;
+  Map<String, dynamic> _queueStats = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _smsQueue = ChunkedSmsQueue();
+    _smsQueue.onLog = (message, isError) => _addLog(message, isError: isError);
     _initialize();
   }
 
   Future<void> _initialize() async {
     _addLog("🚀 Server App Starting...");
     
-    // Setup intent listener first
+    // Setup intent listener first - this handles intents pushed from Android
     _setupIntentListener();
     
     // Request permissions on startup
     _addLog("📱 Requesting SMS permissions...");
-    _permissionsGranted = await _smsService.requestPermissions();
+    _permissionsGranted = await _smsQueue.requestPermissions();
     
     if (_permissionsGranted) {
       _addLog("✅ SMS permissions granted");
-      setState(() => _status = "🟢 Server Ready");
     } else {
       _addLog("❌ SMS permissions denied!", isError: true);
       setState(() => _status = "🔴 No SMS Permission");
     }
     
-    // Check if launched with intent
+    _addLog("📦 Chunked SMS queue initialized");
+    
+    // Check if launched with intent BEFORE checking default status
+    // This ensures the payload is captured first
     await _checkForIntent();
+    
+    // Check if we're the default SMS app (after payload is safe)
+    await _checkDefaultSmsStatus();
+    
+    // Listen to queue changes
+    _smsQueue.statusStream.listen((stats) {
+      if (mounted) {
+        setState(() {
+          _queueStats = stats;
+          _isProcessing = stats['isProcessing'] ?? false;
+          
+          // Update status based on queue
+          final sending = stats['sending'] ?? 0;
+          final pending = stats['pending'] ?? 0;
+          final failed = stats['failed'] ?? 0;
+          
+          if (sending > 0) {
+            final sentChunks = stats['sentChunks'] ?? 0;
+            final totalChunks = stats['totalChunks'] ?? 0;
+            _status = "📤 Sending... ($sentChunks/$totalChunks chunks)";
+          } else if (pending > 0) {
+            _status = "⏳ $pending pending";
+          } else if (failed > 0) {
+            _status = "⚠️ $failed failed";
+          } else if (!_isDefaultSmsApp) {
+            _status = "⚠️ Not Default SMS App";
+          } else if (_permissionsGranted) {
+            _status = "🟢 Server Ready";
+          }
+        });
+      }
+    });
+  }
+  
+  Future<void> _checkDefaultSmsStatus() async {
+    try {
+      final bool isDefault = await platform.invokeMethod('isDefaultSmsApp');
+      setState(() => _isDefaultSmsApp = isDefault);
+      
+      if (isDefault) {
+        _addLog("✅ App is the default SMS app");
+        setState(() => _status = "🟢 Server Ready");
+      } else {
+        _addLog("⚠️ App is NOT the default SMS app - reliability limited!", isError: true);
+        setState(() => _status = "⚠️ Not Default SMS App");
+      }
+    } on PlatformException catch (e) {
+      _addLog("⚠️ Could not check default SMS status: ${e.message}", isError: true);
+    }
+  }
+  
+  Future<void> _requestDefaultSmsApp() async {
+    try {
+      _addLog("📱 Requesting to become default SMS app...");
+      final bool result = await platform.invokeMethod('requestDefaultSmsApp');
+      
+      setState(() => _isDefaultSmsApp = result);
+      
+      if (result) {
+        _addLog("✅ Now the default SMS app!");
+        setState(() => _status = "🟢 Server Ready");
+      } else {
+        _addLog("❌ Request denied or cancelled", isError: true);
+      }
+    } on PlatformException catch (e) {
+      _addLog("⚠️ Error requesting default SMS: ${e.message}", isError: true);
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _smsQueue.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _addLog("📱 App resumed, checking for intents...");
-      _checkForIntent();
+      // Only check default status silently, don't check for intent here
+      // Intent is already handled by handleIntent method channel callback
+      _checkDefaultSmsStatusSilent();
+    }
+  }
+  
+  Future<void> _checkDefaultSmsStatusSilent() async {
+    try {
+      final bool isDefault = await platform.invokeMethod('isDefaultSmsApp');
+      if (mounted) {
+        setState(() => _isDefaultSmsApp = isDefault);
+      }
+    } catch (e) {
+      // Ignore errors on silent check
     }
   }
 
@@ -131,41 +217,23 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
   }
 
   Future<void> _processIncomingPayload(String target, String message) async {
-    if (_isProcessing) {
-      _addLog("⏳ Already processing, please wait...", isError: true);
-      return;
-    }
-    
     if (!_permissionsGranted) {
       _addLog("❌ Cannot send - no SMS permission!", isError: true);
       setState(() => _status = "🔴 No SMS Permission");
       return;
     }
 
-    setState(() {
-      _isProcessing = true;
-      _status = "📤 Sending to $target...";
-    });
-
-    _addLog("📩 Processing payload for: $target");
+    _addLog("📩 Processing message for: $target");
     _addLog("📝 Message length: ${message.length} chars");
     _addLog("📝 Message preview: ${message.substring(0, message.length > 50 ? 50 : message.length)}...");
 
     try {
-      bool success = await _smsService.sendSms(target, message);
-      
-      if (success) {
-        _addLog("✅ SMS sent successfully!");
-        setState(() => _status = "✅ Last send: Success");
-      } else {
-        _addLog("❌ SMS send failed!", isError: true);
-        setState(() => _status = "❌ Last send: Failed");
-      }
+      // Queue the message - it will be chunked and sent in order
+      final msgId = await _smsQueue.queueMessage(target, message);
+      _addLog("✅ Message queued with ID: ${msgId.substring(0, 8)}...");
     } catch (e) {
-      _addLog("❌ Error: $e", isError: true);
+      _addLog("❌ Error queueing message: $e", isError: true);
       setState(() => _status = "❌ Error occurred");
-    } finally {
-      setState(() => _isProcessing = false);
     }
   }
 
@@ -216,7 +284,7 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
             child: Column(
               children: [
                 Icon(
-                  _isProcessing ? Icons.sync : Icons.cloud_done,
+                  _isProcessing ? Icons.sync : (_isDefaultSmsApp ? Icons.cloud_done : Icons.warning_amber),
                   size: 48,
                   color: Theme.of(context).colorScheme.onPrimaryContainer,
                 ),
@@ -231,9 +299,99 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
                   const SizedBox(height: 12),
                   const LinearProgressIndicator(),
                 ],
+                // Show button to become default SMS app if not already
+                if (!_isDefaultSmsApp && _permissionsGranted) ...[
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: _requestDefaultSmsApp,
+                    icon: const Icon(Icons.sms),
+                    label: const Text('Set as Default SMS App'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error,
+                      foregroundColor: Theme.of(context).colorScheme.onError,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Required for reliable message delivery',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onPrimaryContainer.withOpacity(0.7),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
+          
+          // Queue Stats Card
+          if (_queueStats.isNotEmpty) ...[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildStatChip(context, '⏳', 'Pending', _queueStats['pending'] ?? 0),
+                      _buildStatChip(context, '📤', 'Sending', _queueStats['sending'] ?? 0),
+                      _buildStatChip(context, '✅', 'Sent', _queueStats['sent'] ?? 0),
+                      _buildStatChip(context, '❌', 'Failed', _queueStats['failed'] ?? 0),
+                    ],
+                  ),
+                  if ((_queueStats['totalChunks'] ?? 0) > 0) ...[
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: (_queueStats['sentChunks'] ?? 0) / (_queueStats['totalChunks'] ?? 1),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Chunks: ${_queueStats['sentChunks'] ?? 0}/${_queueStats['totalChunks'] ?? 0}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Queue Actions
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: (_queueStats['sent'] ?? 0) > 0
+                          ? () {
+                              _smsQueue.clearSent();
+                              _addLog("🗑️ Cleared sent messages");
+                            }
+                          : null,
+                      icon: const Icon(Icons.clear_all, size: 18),
+                      label: const Text('Clear Sent'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        _smsQueue.clearAll();
+                        _addLog("🗑️ Cleared all messages");
+                      },
+                      icon: const Icon(Icons.delete_sweep, size: 18),
+                      label: const Text('Clear All'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           
           // Logs Header
           Padding(
@@ -308,6 +466,26 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
 
   String _formatTime(DateTime dt) {
     return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+  }
+  
+  Widget _buildStatChip(BuildContext context, String emoji, String label, int count) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(emoji, style: const TextStyle(fontSize: 18)),
+        const SizedBox(height: 2),
+        Text(
+          count.toString(),
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
   }
 }
 
