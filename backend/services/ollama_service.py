@@ -2,7 +2,7 @@ import ollama
 
 class OllamaService:
     @staticmethod
-    def generate_reply(text: str, model: str = "gemma3:4b") -> str:
+    def generate_reply(text: str, model: str = "llama3.2:1b") -> str:
         try:
             response = ollama.chat(model=model, messages=[
                 {
