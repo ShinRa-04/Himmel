@@ -24,6 +24,10 @@ class ChunkCalculator:
         return actual_total
 
     @staticmethod
+    def split_message(text: str, msg_id: str, total_chunks: int) -> list[str]:
+        return ChunkCalculator._perform_split(text, msg_id, total_chunks)
+
+    @staticmethod
     def _perform_split(text: str, msg_id: str, total_chunks: int) -> list[str]:
         chunks = []
         cursor = 0

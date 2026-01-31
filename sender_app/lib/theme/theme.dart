@@ -39,7 +39,6 @@ class AppTheme {
       colorScheme: const ColorScheme.light(
         primary: AppColors.lightBackground,
         secondary: AppColors.accentTeal,
-        background: AppColors.lightBackground,
         surface: AppColors.lightSurface,
       ),
 
@@ -89,7 +88,6 @@ class AppTheme {
       colorScheme: const ColorScheme.dark(
         primary: AppColors.darkBackground,
         secondary: AppColors.accentTeal,
-        background: AppColors.darkBackground,
         surface: AppColors.darkSurface,
       ),
 

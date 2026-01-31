@@ -7,7 +7,7 @@ class OllamaService:
             response = ollama.chat(model=model, messages=[
                 {
                     'role': 'user',
-                    'content': f"Reply to this SMS message: \"{text}\". Keep it concise and natural."
+                    'content': f"Answer: \"{text}\"."
                 },
             ])
             return response['message']['content']

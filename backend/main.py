@@ -3,7 +3,6 @@ from typing import Dict
 import hashlib
 from models import IncomingSMS, ProcessedSMS
 from services.ollama_service import OllamaService
-from services.chunk_calculator import ChunkCalculator
 
 app = FastAPI()
 
@@ -20,15 +19,11 @@ def process_sms_background(incoming: IncomingSMS, result_hash: str):
         # 1. Generate Reply
         reply_text = OllamaService.generate_reply(incoming.original_content)
         
-        # 2. Calculate Chunks for the reply
-        reply_chunks_count = ChunkCalculator.calculate_chunk_count(reply_text)
-        
-        # 3. Create Result Object
+        # 2. Create Result Object (No chunking needed here)
         result = ProcessedSMS(
             sender=incoming.sender,
             content=reply_text,
             timestamp=incoming.timestamp,
-            total_chunks=reply_chunks_count,
             hash=result_hash
         )
         
@@ -69,6 +64,9 @@ async def get_result(result_hash: str):
          raise HTTPException(status_code=500, detail="Error during processing")
          
     if status == "Completed":
-        return results_store[result_hash]
+        # Return the object converted to dict, PLUS the status field
+        result = results_store[result_hash].dict()
+        result["status"] = "Completed"
+        return result
 
     return {"status": "Unknown"}
