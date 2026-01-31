@@ -26,6 +26,8 @@ API_URL = "http://localhost:8000/api/process"
 RESULT_URL = "http://localhost:8000/api/result/{}"
 ADB_CMD = "adb"
 TARGET_PACKAGE = "com.google.android.apps.messaging"
+# Fallback/Alternative packages can be checked in the logic
+TARGET_PACKAGES = ["com.google.android.apps.messaging", "com.android.messaging"]
 SERVER_APP_COMPONENT = "com.example.server_app/.MainActivity"
 # You should ideally load this from environment variables
 DEFAULT_DEVICE_ID = "32001fffe8402687"
@@ -126,14 +128,27 @@ class MobileMonitor:
         self._check_connection()
 
     def _check_connection(self):
-        """Verifies ADB connectivity."""
+        """Verifies ADB connectivity and auto-selects device if needed."""
         try:
             res = subprocess.run([ADB_CMD, "devices"], capture_output=True, text=True)
-            if self.device_id not in res.stdout:
-                logger.warning(f"⚠️ Device {self.device_id} not found in ADB list!")
-                logger.info(f"Available devices:\n{res.stdout.strip()}")
+            output = res.stdout.strip()
+            
+            # Parse devices: skip first line "List of devices attached"
+            lines = output.splitlines()
+            devices = [line.split()[0] for line in lines if line.strip() and "List of devices" not in line and "offline" not in line]
+            
+            if not devices:
+                logger.critical("❌ No ADB devices found! Connect a phone or start an emulator.")
+                sys.exit(1)
+
+            if self.device_id not in devices:
+                logger.warning(f"⚠️ Configured device {self.device_id} not found.")
+                # Auto-select the first available device
+                self.device_id = devices[0]
+                logger.info(f"🔄 Switched to available device: {self.device_id}")
             else:
-                logger.info(f"📱 Connected to device: {self.device_id}")
+                logger.info(f"📱 Connected to configured device: {self.device_id}")
+                
         except FileNotFoundError:
             logger.critical("❌ 'adb' command not found. Install Android Platform Tools.")
             sys.exit(1)
@@ -270,7 +285,7 @@ class MobileMonitor:
         """Starts the infinite monitoring loop."""
         logger.info("---------------------------------------------")
         logger.info(f"👀 MOBILE MONITOR SERVICE STARTED")
-        logger.info(f"🎯 Target Package: {TARGET_PACKAGE}")
+        logger.info(f"🎯 Target Packages: {TARGET_PACKAGES}")
         logger.info(f"🔗 Backend API: {API_URL}")
         logger.info("---------------------------------------------")
 
@@ -285,7 +300,16 @@ class MobileMonitor:
                 records = raw_data.split('NotificationRecord')
                 
                 for record in records:
-                    if TARGET_PACKAGE not in record:
+                    if "pkg=" in record:
+                        # Extract pkg name for debugging
+                        try:
+                            pkg_name = record.split("pkg=")[1].split(" ")[0]
+                            logger.info(f"Found package: {pkg_name}")
+                        except:
+                            pass
+
+                    if not any(pkg in record for pkg in TARGET_PACKAGES):
+                        # logger.debug(f"Skipping package in record...")
                         continue
                     
                     matches = self.bundle_regex.findall(record)
