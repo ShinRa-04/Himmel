@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'services/chunked_sms_queue.dart';
+import 'services/sms_queue_monitor.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,25 +39,40 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
   static const platform = MethodChannel('com.example.server_app/intent');
   
   late final ChunkedSmsQueue _smsQueue;
+  late final SmsQueueMonitor _smsMonitor;
   final List<LogEntry> _logs = [];
   
   String _status = "🟡 Initializing...";
   bool _isProcessing = false;
   bool _permissionsGranted = false;
   bool _isDefaultSmsApp = false;
+  bool _isMonitoring = false;
   Map<String, dynamic> _queueStats = {};
+  
+  // Stats for incoming SMS
+  int _chunksReceived = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // Initialize SMS sending queue
     _smsQueue = ChunkedSmsQueue();
     _smsQueue.onLog = (message, isError) => _addLog(message, isError: isError);
+    
+    // Initialize SMS monitoring (for incoming messages)
+    // Chunks are picked up by the PC via ADB, not forwarded via HTTP
+    _smsMonitor = SmsQueueMonitor();
+    _smsMonitor.onLog = (message, isError) => _addLog(message, isError: isError);
+    _smsMonitor.onSmsReceived = _handleIncomingSms;
+    
     _initialize();
   }
 
   Future<void> _initialize() async {
     _addLog("🚀 Server App Starting...");
+    _addLog("📡 Mode: ADB Bridge (PC monitors chunks via ADB)");
     
     // Setup intent listener first - this handles intents pushed from Android
     _setupIntentListener();
@@ -150,7 +166,47 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _smsQueue.dispose();
+    _smsMonitor.stop();
     super.dispose();
+  }
+  
+  // ============ SMS Monitoring ============
+  
+  void _toggleMonitoring() {
+    setState(() {
+      if (_isMonitoring) {
+        _smsMonitor.stop();
+        _isMonitoring = false;
+        _addLog("🛑 SMS Monitoring stopped");
+      } else {
+        _smsMonitor.start();
+        _isMonitoring = true;
+        _addLog("👂 SMS Monitoring started");
+        _addLog("📡 Chunks will be picked up by PC via ADB bridge");
+      }
+    });
+  }
+  
+  /// Handle incoming SMS chunk from the monitor.
+  /// The chunk file is left in place for the PC's ADB bridge to pick up.
+  void _handleIncomingSms(IncomingSms sms) {
+    setState(() => _chunksReceived++);
+    _addLog("📩 Chunk received from ${sms.sender}");
+    _addLog("   Content: ${sms.body.substring(0, sms.body.length > 50 ? 50 : sms.body.length)}...");
+    _addLog("   📂 Saved to queue for ADB bridge");
+    // Note: The file is NOT deleted here - the ADB bridge on PC will read and delete it
+  }
+  
+  /// Handle complete response from the backend (received via ADB intent).
+  /// This triggers sending the response back to the original sender.
+  /// [messageId] is the original message ID that must be preserved in the response.
+  void _handleBackendResponse(String sender, String responseText, {String? messageId}) {
+    _addLog("🤖 Got AI response for $sender (${responseText.length} chars)");
+    _addLog("   Message ID: ${messageId ?? 'not provided'}");
+    _addLog("   Preview: ${responseText.substring(0, responseText.length > 50 ? 50 : responseText.length)}...");
+    
+    // Queue the response to be sent back to the sender, preserving the original message ID
+    _processIncomingPayload(sender, responseText, messageId: messageId);
   }
 
   @override
@@ -181,11 +237,12 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
         final Map<dynamic, dynamic> args = call.arguments;
         final String? target = args['target'];
         final String? message = args['message'];
+        final String? messageId = args['message_id'];  // Original message ID to preserve
         
-        _addLog("📨 Intent data - target: $target, msgLen: ${message?.length ?? 0}");
+        _addLog("📨 Intent data - target: $target, msgLen: ${message?.length ?? 0}, msgId: ${messageId ?? 'none'}");
         
         if (target != null && message != null) {
-          await _processIncomingPayload(target, message);
+          await _processIncomingPayload(target, message, messageId: messageId);
         }
       }
     });
@@ -200,11 +257,12 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
       if (intentData != null) {
         final String? target = intentData['target'];
         final String? message = intentData['message'];
+        final String? messageId = intentData['message_id'];  // Original message ID
         
-        _addLog("📬 Got intent data - target: $target, msgLen: ${message?.length ?? 0}");
+        _addLog("📬 Got intent data - target: $target, msgLen: ${message?.length ?? 0}, msgId: ${messageId ?? 'none'}");
         
         if (target != null && message != null && target.isNotEmpty && message.isNotEmpty) {
-          await _processIncomingPayload(target, message);
+          await _processIncomingPayload(target, message, messageId: messageId);
         } else {
           _addLog("ℹ️ No valid payload in intent");
         }
@@ -216,7 +274,7 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
     }
   }
 
-  Future<void> _processIncomingPayload(String target, String message) async {
+  Future<void> _processIncomingPayload(String target, String message, {String? messageId}) async {
     if (!_permissionsGranted) {
       _addLog("❌ Cannot send - no SMS permission!", isError: true);
       setState(() => _status = "🔴 No SMS Permission");
@@ -225,11 +283,15 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
 
     _addLog("📩 Processing message for: $target");
     _addLog("📝 Message length: ${message.length} chars");
+    if (messageId != null) {
+      _addLog("🔑 Using original message ID: ${messageId.substring(0, 8)}...");
+    }
     _addLog("📝 Message preview: ${message.substring(0, message.length > 50 ? 50 : message.length)}...");
 
     try {
       // Queue the message - it will be chunked and sent in order
-      final msgId = await _smsQueue.queueMessage(target, message);
+      // Pass the existingId to preserve the original message ID for responses
+      final msgId = await _smsQueue.queueMessage(target, message, existingId: messageId);
       _addLog("✅ Message queued with ID: ${msgId.substring(0, 8)}...");
     } catch (e) {
       _addLog("❌ Error queueing message: $e", isError: true);
@@ -295,6 +357,14 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
                     color: Theme.of(context).colorScheme.onPrimaryContainer,
                   ),
                 ),
+                const SizedBox(height: 8),
+                // ADB Bridge info
+                Text(
+                  'Mode: ADB Bridge • Chunks received: $_chunksReceived',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer.withOpacity(0.7),
+                  ),
+                ),
                 if (_isProcessing) ...[
                   const SizedBox(height: 12),
                   const LinearProgressIndicator(),
@@ -319,6 +389,58 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ],
+              ],
+            ),
+          ),
+          
+          // SMS Monitoring Control Card
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _isMonitoring 
+                  ? Colors.green.withOpacity(0.2)
+                  : Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+              border: _isMonitoring 
+                  ? Border.all(color: Colors.green, width: 2)
+                  : null,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _isMonitoring ? Icons.sensors : Icons.sensors_off,
+                  color: _isMonitoring ? Colors.green : Colors.grey,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _isMonitoring ? 'Monitoring Active' : 'Monitoring Stopped',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: _isMonitoring ? Colors.green : null,
+                        ),
+                      ),
+                      Text(
+                        _isMonitoring 
+                            ? 'Watching for incoming protocol SMS'
+                            : 'Tap to start monitoring incoming SMS',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                FilledButton.icon(
+                  onPressed: _isDefaultSmsApp ? _toggleMonitoring : null,
+                  icon: Icon(_isMonitoring ? Icons.stop : Icons.play_arrow),
+                  label: Text(_isMonitoring ? 'Stop' : 'Start'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _isMonitoring ? Colors.red : Colors.green,
+                  ),
+                ),
               ],
             ),
           ),

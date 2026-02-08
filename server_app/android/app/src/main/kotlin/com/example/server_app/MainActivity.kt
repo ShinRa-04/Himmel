@@ -17,6 +17,7 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.server_app/intent"
     private var pendingTarget: String? = null
     private var pendingMessage: String? = null
+    private var pendingMessageId: String? = null  // Original message ID to preserve
     private var methodChannel: MethodChannel? = null
     private var pendingDefaultSmsResult: MethodChannel.Result? = null
     
@@ -34,18 +35,24 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "MethodChannel call: ${call.method}")
             when (call.method) {
                 "getIntent" -> {
-                    Log.d(TAG, "getIntent called - pending: target=$pendingTarget, msgLen=${pendingMessage?.length ?: 0}")
+                    Log.d(TAG, "getIntent called - pending: target=$pendingTarget, msgLen=${pendingMessage?.length ?: 0}, msgId=$pendingMessageId")
                     if (pendingTarget != null && pendingMessage != null) {
-                        val data = mapOf(
+                        val data = mutableMapOf(
                             "target" to pendingTarget,
                             "message" to pendingMessage
                         )
+                        // Include message_id if present
+                        if (pendingMessageId != null) {
+                            data["message_id"] = pendingMessageId
+                        }
                         // Clear after reading
                         val savedTarget = pendingTarget
                         val savedMsgLen = pendingMessage?.length
+                        val savedMsgId = pendingMessageId
                         pendingTarget = null
                         pendingMessage = null
-                        Log.d(TAG, "Returning intent data: target=$savedTarget, msgLen=$savedMsgLen")
+                        pendingMessageId = null
+                        Log.d(TAG, "Returning intent data: target=$savedTarget, msgLen=$savedMsgLen, msgId=$savedMsgId")
                         result.success(data)
                     } else {
                         Log.d(TAG, "No pending intent data")
@@ -128,7 +135,14 @@ class MainActivity : FlutterActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        Log.d(TAG, "onNewIntent called")
+        Log.d(TAG, "========================================")
+        Log.d(TAG, "onNewIntent CALLED!")
+        Log.d(TAG, "  Action: ${intent.action}")
+        Log.d(TAG, "  Extras: ${intent.extras?.keySet()?.joinToString()}")
+        Log.d(TAG, "  Has target: ${intent.hasExtra("target")}")
+        Log.d(TAG, "  Has message_b64: ${intent.hasExtra("message_b64")}")
+        Log.d(TAG, "  Has message_id: ${intent.hasExtra("message_id")}")
+        Log.d(TAG, "========================================")
         setIntent(intent)
         handleIntent(intent)
     }
@@ -137,7 +151,9 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "handleIntent called, intent=$intent")
         intent?.let {
             val target = it.getStringExtra("target")
+            val messageId = it.getStringExtra("message_id")  // Original message ID
             Log.d(TAG, "Intent target: $target")
+            Log.d(TAG, "Intent message_id: $messageId")
             
             // Try base64 encoded message first (preferred), fallback to plain text
             var message: String? = null
@@ -162,23 +178,39 @@ class MainActivity : FlutterActivity() {
             }
             
             if (!target.isNullOrEmpty() && !message.isNullOrEmpty()) {
-                Log.d(TAG, "Valid payload received! Setting pending data.")
+                Log.d(TAG, "========================================")
+                Log.d(TAG, "VALID PAYLOAD RECEIVED!")
+                Log.d(TAG, "  Target: $target")
+                Log.d(TAG, "  Message length: ${message.length}")
+                Log.d(TAG, "  Message ID: $messageId")
+                Log.d(TAG, "  Method channel ready: ${methodChannel != null}")
+                Log.d(TAG, "========================================")
+                
                 pendingTarget = target
                 pendingMessage = message
+                pendingMessageId = messageId  // Preserve original message ID
                 
                 // If Flutter engine is ready, send immediately via method channel
                 // and clear pending data to prevent duplicate processing
                 if (methodChannel != null) {
-                    Log.d(TAG, "Invoking handleIntent on Flutter side")
+                    Log.d(TAG, ">>> INVOKING FLUTTER handleIntent <<<")
                     // Clear pending BEFORE invoking to prevent getIntent from returning same data
                     pendingTarget = null
                     pendingMessage = null
-                    methodChannel?.invokeMethod("handleIntent", mapOf(
+                    pendingMessageId = null
+                    
+                    val payload = mutableMapOf(
                         "target" to target,
                         "message" to message
-                    ))
+                    )
+                    if (messageId != null) {
+                        payload["message_id"] = messageId
+                    }
+                    
+                    methodChannel?.invokeMethod("handleIntent", payload)
+                    Log.d(TAG, ">>> Flutter method invoked <<<")
                 } else {
-                    Log.d(TAG, "Method channel not ready, data stored for getIntent")
+                    Log.d(TAG, "Method channel not ready, data stored for getIntent poll")
                 }
             } else {
                 Log.d(TAG, "Invalid payload: target=$target, msgLen=${message?.length ?: 0}")

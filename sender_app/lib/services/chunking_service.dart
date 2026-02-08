@@ -1,17 +1,26 @@
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
+/// Result of chunking a message
+class ChunkResult {
+  final List<String> chunks;
+  final String messageId;
+  
+  ChunkResult({required this.chunks, required this.messageId});
+}
+
 class ChunkingService {
   static const int MAX_SMS_LENGTH = 160;
 
   /// Splits a message into chunks based on the defined protocol.
+  /// Returns both the chunks and the message ID for tracking.
   /// Header:
   /// ID: <MD5 Hash>
   /// M: <Total Chunks> (Only in Chunk 1)
   /// I: <Index> (1-based)
   /// T: <Text Payload>
-  List<String> chunkMessage(String fullText) {
-    if (fullText.isEmpty) return [];
+  ChunkResult chunkMessage(String fullText) {
+    if (fullText.isEmpty) return ChunkResult(chunks: [], messageId: '');
 
     // 1. Generate ID (MD5 Hash)
     final String msgId = md5.convert(utf8.encode(fullText)).toString();
@@ -34,7 +43,6 @@ class ChunkingService {
     // Try to fit content.
     
     // Let's iterate to find exact M.
-    List<String> chunks = [];
     int currentCharsProcessed = 0;
     int chunkIndex = 1;
     
@@ -52,7 +60,8 @@ class ChunkingService {
     int actualTotal = dryRunChunks.length;
     
     // Real pass
-    return _performSplit(fullText, msgId, actualTotal);
+    final chunks = _performSplit(fullText, msgId, actualTotal);
+    return ChunkResult(chunks: chunks, messageId: msgId);
   }
 
   List<String> _performSplit(String text, String id, int totalChunks) {

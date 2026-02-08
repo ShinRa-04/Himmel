@@ -6,6 +6,18 @@ class IncomingSMS(BaseModel):
     original_content: str
     timestamp: int
 
+class IncomingChunk(BaseModel):
+    """A single SMS chunk received from the server_app."""
+    sender: str
+    content: str  # Raw SMS content with protocol headers
+    timestamp: int
+
+class IncomingChunk(BaseModel):
+    """A single SMS chunk received from the server_app."""
+    sender: str
+    content: str  # Raw SMS content with protocol headers
+    timestamp: int
+
 class ProcessedSMS(BaseModel):
     sender: str
     content: str

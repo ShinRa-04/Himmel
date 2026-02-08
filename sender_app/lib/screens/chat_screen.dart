@@ -3,9 +3,11 @@ import '../widgets/drawer.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/input_area.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/typing_indicator.dart';
 import '../theme/colors.dart';
 import '../models/message.dart';
 import '../services/sms_service.dart';
+import '../services/sms_listener_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -18,7 +20,83 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<Message> _messages = [];
   final ScrollController _scrollController = ScrollController();
   final SmsService _smsService = SmsService();
-  String _targetNumber = "8595819054"; // Default
+  final SmsListenerService _smsListenerService = SmsListenerService();
+  
+  String _targetNumber = "7042426701"; // Default - the server phone number
+  
+  // State for typing indicator
+  bool _isWaitingForResponse = false;
+  int _receivingChunk = 0;
+  int _receivingTotal = 0;
+  
+  // Track the expected message ID for matching responses
+  String? _expectedMessageId;
+
+  @override
+  void initState() {
+    super.initState();
+    _initSmsListener();
+  }
+
+  @override
+  void dispose() {
+    _smsListenerService.stopListening();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Initialize the SMS listener to receive incoming messages.
+  Future<void> _initSmsListener() async {
+    // Set up callbacks
+    _smsListenerService.onCompleteMessage = _handleIncomingMessage;
+    _smsListenerService.onChunkReceived = _handleChunkReceived;
+    
+    // Start listening for messages from the server phone
+    await _smsListenerService.startListening(expectedSender: _targetNumber);
+  }
+
+  /// Called when a complete message is received and assembled.
+  void _handleIncomingMessage(String messageId, String sender, String message) {
+    if (!mounted) return;
+    
+    // Only accept response if it matches the expected message ID
+    if (_expectedMessageId != null && messageId != _expectedMessageId) {
+      debugPrint('Ignoring response with ID $messageId - waiting for $_expectedMessageId');
+      return;
+    }
+    
+    setState(() {
+      _isWaitingForResponse = false;
+      _receivingChunk = 0;
+      _receivingTotal = 0;
+      _expectedMessageId = null; // Clear expected ID
+      
+      // Add the AI response message
+      _messages.add(Message(
+        text: message,
+        isUser: false,
+        status: MessageStatus.sent,
+      ));
+    });
+    
+    _scrollToBottom();
+  }
+
+  /// Called when a chunk is received (for progress feedback).
+  void _handleChunkReceived(String messageId, String sender, int current, int total) {
+    if (!mounted) return;
+    
+    // Only show chunk progress if it matches the expected message ID
+    if (_expectedMessageId != null && messageId != _expectedMessageId) {
+      debugPrint('Ignoring chunk for ID $messageId - waiting for $_expectedMessageId');
+      return;
+    }
+    
+    setState(() {
+      _receivingChunk = current;
+      _receivingTotal = total;
+    });
+  }
 
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -37,20 +115,30 @@ class _ChatScreenState extends State<ChatScreen> {
     final newMessage = Message(text: text, isUser: true, status: MessageStatus.pending);
     setState(() {
       _messages.add(newMessage);
+      _isWaitingForResponse = true; // Show typing indicator
     });
     _scrollToBottom();
 
     // 2. Send SMS via Service
-    bool success = await _smsService.sendSms(_targetNumber, text);
+    final result = await _smsService.sendSms(_targetNumber, text);
 
-    // 3. Update Status
+    // 3. Update Status and track message ID
     if (mounted) {
       setState(() {
-        newMessage.status = success ? MessageStatus.sent : MessageStatus.failed;
+        newMessage.status = result.success ? MessageStatus.sent : MessageStatus.failed;
+        if (result.success && result.messageId != null) {
+          // Store the expected message ID for matching responses
+          _expectedMessageId = result.messageId;
+          debugPrint('Waiting for response with ID: $_expectedMessageId');
+        } else if (!result.success) {
+          // If send failed, stop waiting for response
+          _isWaitingForResponse = false;
+          _expectedMessageId = null;
+        }
       });
     }
-
-    // 4. (Optional) Simulate Reply later or just listen to incoming (out of scope for now)
+    
+    _scrollToBottom();
   }
 
   void _showEditNumberDialog() {
@@ -59,11 +147,11 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text("Set Target Number"),
+          title: const Text("Set Server Phone Number"),
           content: TextField(
             controller: numberController,
             keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(hintText: "Enter phone number"),
+            decoration: const InputDecoration(hintText: "Enter server phone number"),
           ),
           actions: [
             TextButton(
@@ -74,6 +162,8 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: () {
                 setState(() {
                   _targetNumber = numberController.text;
+                  // Update the SMS listener to listen from the new number
+                  _smsListenerService.setExpectedSender(_targetNumber);
                 });
                 Navigator.pop(context);
               },
@@ -132,13 +222,27 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: _messages.isEmpty
+            child: _messages.isEmpty && !_isWaitingForResponse
                 ? const EmptyStateWidget()
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.only(bottom: 20),
-                    itemCount: _messages.length,
+                    // +1 for typing indicator if waiting
+                    itemCount: _messages.length + (_isWaitingForResponse ? 1 : 0),
                     itemBuilder: (context, index) {
+                      // Show typing indicator as the last item
+                      if (_isWaitingForResponse && index == _messages.length) {
+                        // Show receiving progress if chunks are coming
+                        if (_receivingChunk > 0 && _receivingTotal > 0) {
+                          return ReceivingIndicator(
+                            currentChunk: _receivingChunk,
+                            totalChunks: _receivingTotal,
+                          );
+                        }
+                        // Show typing dots while waiting
+                        return const TypingIndicator();
+                      }
+                      
                       final msg = _messages[index];
                       return MessageBubble(
                         message: msg.text,

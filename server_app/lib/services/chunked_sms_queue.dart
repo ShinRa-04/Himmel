@@ -72,7 +72,8 @@ typedef QueueStatusCallback = void Function(String status, bool isError);
 /// A chunk-aware SMS queue that ensures all chunks are loaded before sending
 class ChunkedSmsQueue {
   static const int MAX_SMS_LENGTH = 160;
-  static const Duration CHUNK_SEND_DELAY = Duration(milliseconds: 200);
+  static const Duration CHUNK_SEND_DELAY = Duration(milliseconds: 1000); // 1 second between chunks
+  static const Duration SEND_TIMEOUT = Duration(seconds: 5); // Wait up to 5s for send confirmation
   static const int MAX_CHUNK_RETRIES = 3;
   
   final Telephony _telephony = Telephony.instance;
@@ -81,6 +82,7 @@ class ChunkedSmsQueue {
   
   QueueStatusCallback? onLog;
   bool _isProcessing = false;
+  Completer<void>? _currentSendLock; // Ensure only one send at a time
   
   Stream<Map<String, dynamic>> get statusStream => _statusController.stream;
   bool get isProcessing => _isProcessing;
@@ -94,11 +96,14 @@ class ChunkedSmsQueue {
   
   /// Queue a full message - it will be chunked and queued with verification
   /// Returns the message ID
-  Future<String> queueMessage(String target, String fullText) async {
+  /// If [existingId] is provided, uses that ID instead of generating a new one.
+  /// This is used for responses where we need to preserve the original message ID.
+  Future<String> queueMessage(String target, String fullText, {String? existingId}) async {
     _log("📥 Queueing message for $target (${fullText.length} chars)");
     
-    // Generate message ID
-    final String msgId = md5.convert(utf8.encode(fullText + DateTime.now().toIso8601String())).toString();
+    // Use existing ID if provided (for responses), otherwise generate new one
+    final String msgId = existingId ?? md5.convert(utf8.encode(fullText + DateTime.now().toIso8601String())).toString();
+    _log("📋 Message ID: ${msgId.substring(0, 8)}... ${existingId != null ? '(preserved from request)' : '(newly generated)'}");
     
     // Try chunking with retries if verification fails
     QueuedMessage? queuedMessage;
@@ -128,6 +133,10 @@ class ChunkedSmsQueue {
     // Add to pending messages
     _pendingMessages[msgId] = queuedMessage;
     _notifyStatus();
+    
+    // Wait 500ms after queue is filled to ensure stability before sending
+    _log("⏳ Queue filled. Waiting 500ms before sending...");
+    await Future.delayed(const Duration(milliseconds: 500));
     
     // Start processing if not already
     _processQueue();
@@ -295,6 +304,13 @@ class ChunkedSmsQueue {
   
   /// Send a complete message (all chunks in order)
   Future<void> _sendMessage(QueuedMessage message) async {
+    // Acquire send lock - only one message at a time
+    if (_currentSendLock != null && !_currentSendLock!.isCompleted) {
+      _log("⏳ Waiting for previous send to complete...");
+      await _currentSendLock!.future;
+    }
+    _currentSendLock = Completer<void>();
+    
     message.isSending = true;
     _notifyStatus();
     
@@ -322,60 +338,73 @@ class ChunkedSmsQueue {
         }
         
         _log("   📤 Sending chunk ${chunk.index}/${chunk.totalChunks}...");
+        _log("      Content: ${chunk.content.substring(0, chunk.content.length > 50 ? 50 : chunk.content.length)}...");
         
-        // Use status listener to track send result
+        // Send with confirmation using Completer
         bool sendSuccess = false;
-        final completer = Completer<bool>();
         
-        try {
-          await _telephony.sendSms(
-            to: chunk.target,
-            message: chunk.content,
-            statusListener: (SendStatus status) {
-              _log("   📡 Chunk ${chunk.index} status: $status");
-              if (status == SendStatus.SENT) {
-                sendSuccess = true;
-                if (!completer.isCompleted) completer.complete(true);
-              } else if (status == SendStatus.DELIVERED) {
-                _log("   ✅ Chunk ${chunk.index} DELIVERED!");
-              }
-            },
-          );
-          
-          // Give some time for the status callback
-          await Future.delayed(const Duration(milliseconds: 100));
-          
-          // Consider it sent if no immediate failure
-          if (!completer.isCompleted) {
-            completer.complete(true);
+        for (int retry = 0; retry < 3; retry++) {
+          try {
+            final sendCompleter = Completer<bool>();
+            
+            // Send SMS with status listener
+            await _telephony.sendSms(
+              to: chunk.target,
+              message: chunk.content,
+              statusListener: (SendStatus status) {
+                _log("      📡 Status: $status");
+                if (!sendCompleter.isCompleted) {
+                  if (status == SendStatus.SENT) {
+                    sendCompleter.complete(true);
+                  } else if (status == SendStatus.DELIVERED) {
+                    // Already completed on SENT, but log delivery
+                    _log("      ✅ Delivered!");
+                  }
+                }
+              },
+            );
+            
+            // Wait for SENT status or timeout
+            try {
+              sendSuccess = await sendCompleter.future.timeout(
+                SEND_TIMEOUT,
+                onTimeout: () {
+                  _log("      ⏰ Send timeout - assuming success");
+                  return true; // Assume success on timeout
+                },
+              );
+            } catch (e) {
+              _log("      ⚠️ Completer error: $e");
+              sendSuccess = true; // Assume success if completer fails
+            }
+            
+            if (sendSuccess) {
+              _log("   ✓ Chunk ${chunk.index} sent!");
+              break;
+            }
+            
+          } catch (e) {
+            _log("   ⚠️ Chunk ${chunk.index} attempt ${retry + 1} failed: $e", isError: retry == 2);
+            if (retry < 2) {
+              _log("   🔄 Retrying in 1s...");
+              await Future.delayed(const Duration(seconds: 1));
+            }
           }
-          
-          sendSuccess = await completer.future.timeout(
-            const Duration(seconds: 2),
-            onTimeout: () {
-              _log("   ⚠️ Chunk ${chunk.index} send status timeout - assuming sent");
-              return true;
-            },
-          );
-          
-        } catch (e) {
-          _log("   ❌ Chunk ${chunk.index} send FAILED: $e", isError: true);
-          sendSuccess = false;
         }
         
         if (sendSuccess) {
           chunk.isSent = true;
           successCount++;
-          _log("   ✓ Chunk ${chunk.index} queued for sending");
         } else {
           failCount++;
-          _log("   ✗ Chunk ${chunk.index} FAILED to send!", isError: true);
+          _log("   ✗ Chunk ${chunk.index} FAILED after 3 attempts!", isError: true);
         }
         
         _notifyStatus();
         
-        // Wait 200ms between chunks (except after last one)
+        // CRITICAL: Wait between chunks to ensure carrier processes them in order
         if (i < sortedChunks.length - 1) {
+          _log("   ⏳ Waiting ${CHUNK_SEND_DELAY.inMilliseconds}ms before next chunk...");
           await Future.delayed(CHUNK_SEND_DELAY);
         }
       }
@@ -396,6 +425,11 @@ class ChunkedSmsQueue {
       message.isSending = false;
       message.error = e.toString();
       _log("❌ Failed to send message: $e", isError: true);
+    } finally {
+      // Release send lock
+      if (_currentSendLock != null && !_currentSendLock!.isCompleted) {
+        _currentSendLock!.complete();
+      }
     }
     
     _notifyStatus();

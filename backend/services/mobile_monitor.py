@@ -175,7 +175,7 @@ class MobileMonitor:
             logger.error(f"ADB Execution Error: {e}")
             return ""
 
-    def send_sms(self, target: str, message: str):
+    def send_sms(self, target: str, message: str, message_id: str = None):
         """Sends an SMS via Server App using ADB Intent."""
         try:
             logger.info(f"📤 Preparing to send to {target}...")
@@ -185,14 +185,24 @@ class MobileMonitor:
             import base64
             encoded_message = base64.b64encode(message.encode('utf-8')).decode('ascii')
             
+            logger.info(f"📦 Encoded message length: {len(encoded_message)} (original: {len(message)})")
+            if message_id:
+                logger.info(f"🔑 Using message ID: {message_id[:8]}...")
+            
             # Construct ADB Command to launch Server App MainActivity with extras
+            # Use -f 0x20000000 (FLAG_ACTIVITY_SINGLE_TOP) to reuse existing instance
             cmd = [
                 ADB_CMD, "-s", self.device_id, "shell", "am", "start",
                 "-n", SERVER_APP_COMPONENT,
+                "-f", "0x20000000",  # FLAG_ACTIVITY_SINGLE_TOP
                 "--es", "target", target,
                 "--es", "message_b64", encoded_message,  # Send as base64
-                "--activity-clear-top"
             ]
+            
+            # Add message_id if provided
+            if message_id:
+                cmd.extend(["--es", "message_id", message_id])
+            
             logger.debug(f"Executing CMD: {' '.join(cmd)}")
             
             # Capture output for debugging
@@ -225,11 +235,11 @@ class MobileMonitor:
                         content = data.get("content")
                         logger.info(f"✅ AI Reply Generated! Length: {len(content)}")
                         
-                        logger.info(f"✅ AI Reply Generated! Length: {len(content)}")
-                        
                         # Send Full Message (Server App will handle chunking)
+                        # Pass the result_hash as message_id to preserve ID through the round trip
                         logger.info(f"📤 Sending Full Payload to Server App for {sender}")
-                        self.send_sms(sender, content)
+                        logger.info(f"🔑 Using message ID: {result_hash[:8]}...")
+                        self.send_sms(sender, content, message_id=result_hash)
                         logger.info("✨ Payload sent to ADB!")
                         return
                         

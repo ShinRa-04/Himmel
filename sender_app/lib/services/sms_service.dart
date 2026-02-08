@@ -1,33 +1,54 @@
 import 'package:another_telephony/telephony.dart';
 import 'chunking_service.dart';
 
+/// Result of sending an SMS
+class SmsSendResult {
+  final bool success;
+  final String? messageId;  // The ID used for this message (for matching responses)
+  final String? error;
+  
+  SmsSendResult({required this.success, this.messageId, this.error});
+}
+
 class SmsService {
   final Telephony _telephony = Telephony.instance;
   final ChunkingService _chunker = ChunkingService();
 
-  Future<bool> sendSms(String to, String message) async {
+  /// Send an SMS and return the result including the message ID.
+  Future<SmsSendResult> sendSms(String to, String message) async {
     bool? permissionsGranted = await _telephony.requestPhoneAndSmsPermissions;
 
     if (permissionsGranted == true) {
       try {
-        List<String> chunks = _chunker.chunkMessage(message);
+        // Get chunks and the message ID
+        final result = _chunker.chunkMessage(message);
+        final chunks = result.chunks;
+        final messageId = result.messageId;
         
-        for (String chunk in chunks) {
+        print('📤 Sending message with ID: ${messageId.substring(0, 8)}...');
+        print('   Total chunks: ${chunks.length}');
+        
+        for (int i = 0; i < chunks.length; i++) {
+          print('   Sending chunk ${i + 1}/${chunks.length}...');
           await _telephony.sendSms(
             to: to,
-            message: chunk,
+            message: chunks[i],
           );
           // Small delay to ensure order in buffer
-          await Future.delayed(const Duration(milliseconds: 300));
+          if (i < chunks.length - 1) {
+            await Future.delayed(const Duration(milliseconds: 300));
+          }
         }
-        return true;
+        
+        print('✅ All chunks sent for message ${messageId.substring(0, 8)}');
+        return SmsSendResult(success: true, messageId: messageId);
       } catch (e) {
-        print("Error sending SMS: $e");
-        return false;
+        print("❌ Error sending SMS: $e");
+        return SmsSendResult(success: false, error: e.toString());
       }
     } else {
-      print("SMS Permissions not granted");
-      return false;
+      print("❌ SMS Permissions not granted");
+      return SmsSendResult(success: false, error: "Permissions not granted");
     }
   }
 }
