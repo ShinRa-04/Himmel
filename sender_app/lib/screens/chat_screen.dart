@@ -8,6 +8,7 @@ import '../theme/colors.dart';
 import '../models/message.dart';
 import '../services/sms_service.dart';
 import '../services/sms_listener_service.dart';
+import '../services/settings_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -22,12 +23,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final SmsService _smsService = SmsService();
   final SmsListenerService _smsListenerService = SmsListenerService();
   
-  String _targetNumber = "7042426701"; // Default - the server phone number
+  String _targetNumber = ""; // Will be loaded from settings
   
   // State for typing indicator
   bool _isWaitingForResponse = false;
   int _receivingChunk = 0;
-  int _receivingTotal = 0;
+  int? _receivingTotal; // null if total is unknown (chunk 1 missing)
   
   // Track the expected message ID for matching responses
   String? _expectedMessageId;
@@ -35,7 +36,18 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _initSmsListener();
+    _loadSettings();
+  }
+
+  /// Load saved settings (server phone number).
+  Future<void> _loadSettings() async {
+    final savedNumber = await SettingsService.getServerPhoneNumber();
+    if (mounted) {
+      setState(() {
+        _targetNumber = savedNumber;
+      });
+      _initSmsListener();
+    }
   }
 
   @override
@@ -68,7 +80,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _isWaitingForResponse = false;
       _receivingChunk = 0;
-      _receivingTotal = 0;
+      _receivingTotal = null;
       _expectedMessageId = null; // Clear expected ID
       
       // Add the AI response message
@@ -83,7 +95,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Called when a chunk is received (for progress feedback).
-  void _handleChunkReceived(String messageId, String sender, int current, int total) {
+  void _handleChunkReceived(String messageId, String sender, int received, int? total) {
     if (!mounted) return;
     
     // Only show chunk progress if it matches the expected message ID
@@ -93,7 +105,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     
     setState(() {
-      _receivingChunk = current;
+      _receivingChunk = received;
       _receivingTotal = total;
     });
   }
@@ -147,27 +159,61 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text("Set Server Phone Number"),
-          content: TextField(
-            controller: numberController,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(hintText: "Enter server phone number"),
+          icon: const Icon(Icons.phone, size: 32),
+          title: const Text("Target Phone Number"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Enter the phone number to send messages to:",
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: numberController,
+                keyboardType: TextInputType.phone,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: "e.g., 9876543210",
+                  prefixIcon: const Icon(Icons.dialpad),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                ),
+                onSubmitted: (_) async {
+                  final newNumber = numberController.text.trim();
+                  if (newNumber.isNotEmpty) {
+                    await SettingsService.setServerPhoneNumber(newNumber);
+                    setState(() {
+                      _targetNumber = newNumber;
+                      _smsListenerService.setExpectedSender(_targetNumber);
+                    });
+                    Navigator.pop(context);
+                  }
+                },
+              ),
+            ],
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text("Cancel"),
             ),
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _targetNumber = numberController.text;
-                  // Update the SMS listener to listen from the new number
-                  _smsListenerService.setExpectedSender(_targetNumber);
-                });
-                Navigator.pop(context);
+            FilledButton.icon(
+              onPressed: () async {
+                final newNumber = numberController.text.trim();
+                if (newNumber.isNotEmpty) {
+                  await SettingsService.setServerPhoneNumber(newNumber);
+                  setState(() {
+                    _targetNumber = newNumber;
+                    _smsListenerService.setExpectedSender(_targetNumber);
+                  });
+                  Navigator.pop(context);
+                }
               },
-              child: const Text("Save"),
+              icon: const Icon(Icons.save),
+              label: const Text("Save"),
             ),
           ],
         );
@@ -188,28 +234,54 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         centerTitle: true,
-        title: Column(
-          children: [
-            Text(
-              "Direct SMS",
-              style: TextStyle(
-                color: isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.w600
+        title: GestureDetector(
+          onTap: _showEditNumberDialog,
+          child: Column(
+            children: [
+              Text(
+                "Direct SMS",
+                style: TextStyle(
+                  color: isDark ? AppColors.darkTextPrimary : AppColors.lightTextPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600
+                ),
               ),
-            ),
-            Text(
-              _targetNumber,
-              style: TextStyle(
-                color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
-                fontSize: 10,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.phone,
+                    size: 10,
+                    color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _targetNumber.isEmpty ? "Tap to set number" : _targetNumber,
+                    style: TextStyle(
+                      color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                      fontSize: 10,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.edit,
+                    size: 10,
+                    color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                  ),
+                ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
             IconButton(
-                icon: const Icon(Icons.edit_note), // "New Chat" icon to clear
+                icon: const Icon(Icons.phone_outlined),
+                tooltip: 'Edit Target Number',
+                onPressed: _showEditNumberDialog,
+            ),
+            IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Clear Chat',
                 onPressed: () {
                     setState(() {
                         _messages.clear();
@@ -233,9 +305,9 @@ class _ChatScreenState extends State<ChatScreen> {
                       // Show typing indicator as the last item
                       if (_isWaitingForResponse && index == _messages.length) {
                         // Show receiving progress if chunks are coming
-                        if (_receivingChunk > 0 && _receivingTotal > 0) {
+                        if (_receivingChunk > 0) {
                           return ReceivingIndicator(
-                            currentChunk: _receivingChunk,
+                            receivedChunks: _receivingChunk,
                             totalChunks: _receivingTotal,
                           );
                         }

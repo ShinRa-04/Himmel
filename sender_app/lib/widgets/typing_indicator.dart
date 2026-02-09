@@ -145,19 +145,32 @@ class _TypingIndicatorState extends State<TypingIndicator>
 
 /// A simpler receiving indicator that shows chunk progress.
 class ReceivingIndicator extends StatelessWidget {
-  final int currentChunk;
-  final int totalChunks;
+  final int receivedChunks;
+  final int? totalChunks; // null if unknown (chunk 1 missing)
 
   const ReceivingIndicator({
     super.key,
-    required this.currentChunk,
-    required this.totalChunks,
+    required this.receivedChunks,
+    this.totalChunks,
   });
 
   @override
   Widget build(BuildContext context) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
-    final progress = totalChunks > 0 ? currentChunk / totalChunks : 0.0;
+    
+    // Calculate progress if total is known
+    double? progress;
+    if (totalChunks != null && totalChunks! > 0) {
+      progress = receivedChunks / totalChunks!;
+    }
+    
+    // Build display text
+    String displayText;
+    if (totalChunks != null) {
+      displayText = 'Receiving $receivedChunks/$totalChunks';
+    } else {
+      displayText = 'Receiving $receivedChunks chunks...';
+    }
     
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
@@ -195,7 +208,7 @@ class ReceivingIndicator extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'Receiving $currentChunk/$totalChunks',
+                  displayText,
                   style: TextStyle(
                     color: isDark 
                         ? AppColors.darkTextSecondary 

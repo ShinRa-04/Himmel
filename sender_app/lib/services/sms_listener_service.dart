@@ -6,8 +6,8 @@ import 'message_buffer.dart';
 typedef OnCompleteMessageReceived = void Function(String messageId, String sender, String message);
 
 /// Callback for when a chunk is received (for UI feedback).
-/// Now includes the message ID being assembled.
-typedef OnChunkReceived = void Function(String messageId, String sender, int current, int total);
+/// Provides: messageId, sender, receivedCount, expectedTotal (null if unknown)
+typedef OnChunkReceived = void Function(String messageId, String sender, int received, int? total);
 
 /// Service that listens for incoming SMS messages and reassembles chunked messages.
 class SmsListenerService {
@@ -26,12 +26,19 @@ class SmsListenerService {
     _messageBuffer = MessageBuffer(
       onMessageComplete: _handleMessageComplete,
     );
+    // Set up chunk progress callback
+    _messageBuffer.onChunkProgress = _handleChunkProgress;
   }
 
   /// Called when a complete message is assembled.
   void _handleMessageComplete(String messageId, String sender, String fullText, int timestamp) {
     print('📬 Complete message from $sender with ID ${messageId.substring(0, 8)}: ${fullText.length} chars');
     onCompleteMessage?.call(messageId, sender, fullText);
+  }
+  
+  /// Called when a chunk is received (for progress feedback).
+  void _handleChunkProgress(String messageId, String sender, int received, int? total) {
+    onChunkReceived?.call(messageId, sender, received, total);
   }
 
   /// Start listening for incoming SMS from a specific sender.
@@ -110,8 +117,6 @@ class SmsListenerService {
     
     if (messageId != null) {
       print('✅ Processed as protocol message with ID: ${messageId.substring(0, 8)}...');
-      // Notify about chunk received for UI feedback
-      _notifyChunkReceived(messageId, sender, body);
     } else {
       print('⏭️ Not a protocol message, ignoring');
     }
@@ -125,20 +130,6 @@ class SmsListenerService {
     
     // Check if one ends with the other (handles country codes)
     return clean1.endsWith(clean2) || clean2.endsWith(clean1) || clean1 == clean2;
-  }
-
-  /// Extract chunk info for UI notification.
-  void _notifyChunkReceived(String messageId, String sender, String content) {
-    if (onChunkReceived == null) return;
-    
-    final idMatch = RegExp(r'ID:([a-fA-F0-9]+)').firstMatch(content);
-    final idxMatch = RegExp(r'I:(\d+)').firstMatch(content);
-    final totalMatch = RegExp(r'M:(\d+)').firstMatch(content);
-    
-    final index = idxMatch != null ? int.parse(idxMatch.group(1)!) : 1;
-    final total = totalMatch != null ? int.parse(totalMatch.group(1)!) : 1;
-    
-    onChunkReceived!(messageId, sender, index, total);
   }
 
   /// Check if there are messages being assembled.

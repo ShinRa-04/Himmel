@@ -1,31 +1,54 @@
+import 'dart:async';
 
 /// Represents a message being reassembled from multiple SMS chunks.
 class PartialMessage {
   final String msgId;
   final String sender;
   final int timestamp;
-  int maxChunks;
+  int? maxChunks; // null if unknown (chunk 1 missing)
   final Map<int, String> chunks; // index -> payload (1-based)
+  DateTime lastChunkTime;
 
   PartialMessage({
     required this.msgId,
     required this.sender,
     required this.timestamp,
-    this.maxChunks = 1,
-  }) : chunks = {};
+    this.maxChunks,
+  }) : chunks = {},
+       lastChunkTime = DateTime.now();
 
   void addChunk(int index, int? total, String payload) {
-    if (total != null) {
+    if (total != null && (maxChunks == null || total > maxChunks!)) {
       maxChunks = total;
     }
     chunks[index] = payload;
+    lastChunkTime = DateTime.now();
   }
 
-  bool get isComplete => chunks.length == maxChunks;
+  /// Number of chunks received so far
+  int get receivedCount => chunks.length;
+  
+  /// Highest chunk index we've seen
+  int get highestIndex => chunks.keys.isEmpty ? 0 : chunks.keys.reduce((a, b) => a > b ? a : b);
 
+  /// Check if complete (all chunks received)
+  bool get isComplete => maxChunks != null && chunks.length == maxChunks;
+
+  /// Merge available chunks, skipping missing ones
   String merge() {
-    final sortedIndices = chunks.keys.toList()..sort();
-    return sortedIndices.map((i) => chunks[i]).join('');
+    // Determine the range of chunks to merge
+    final maxIdx = maxChunks ?? highestIndex;
+    final buffer = StringBuffer();
+    
+    for (int i = 1; i <= maxIdx; i++) {
+      if (chunks.containsKey(i)) {
+        buffer.write(chunks[i]);
+      } else {
+        // Missing chunk - add placeholder or skip
+        print('⚠️ Missing chunk $i, skipping');
+      }
+    }
+    return buffer.toString();
   }
 }
 
@@ -33,10 +56,18 @@ class PartialMessage {
 /// Now includes the message ID for matching with sent messages.
 typedef OnMessageComplete = void Function(String messageId, String sender, String fullText, int timestamp);
 
+/// Callback for chunk progress updates.
+/// Provides: messageId, sender, receivedCount, expectedTotal (null if unknown)
+typedef OnChunkProgress = void Function(String messageId, String sender, int received, int? total);
+
 /// Manages incoming SMS chunks and reassembles them into complete messages.
 class MessageBuffer {
+  static const Duration CHUNK_TIMEOUT = Duration(milliseconds: 2000);
+  
   final Map<String, PartialMessage> _buffer = {};
+  final Map<String, Timer> _timeoutTimers = {};
   final OnMessageComplete onMessageComplete;
+  OnChunkProgress? onChunkProgress;
 
   MessageBuffer({required this.onMessageComplete});
 
@@ -77,23 +108,19 @@ class MessageBuffer {
 
       _buffer[msgId]!.addChunk(index, total, payload);
 
-      final currentCount = _buffer[msgId]!.chunks.length;
-      final totalCount = _buffer[msgId]!.maxChunks;
-      print('🧩 Received Chunk $index/$totalCount for ID ${msgId.substring(0, 8)}...');
+      final receivedCount = _buffer[msgId]!.receivedCount;
+      final expectedTotal = _buffer[msgId]!.maxChunks;
+      print('🧩 Received Chunk $index (${receivedCount}/${expectedTotal ?? "?"}) for ID ${msgId.substring(0, 8)}...');
+
+      // Notify progress callback
+      onChunkProgress?.call(msgId, sender, receivedCount, expectedTotal);
+
+      // Reset/start timeout timer
+      _resetTimeout(msgId);
 
       // 6. Check Completion
       if (_buffer[msgId]!.isComplete) {
-        final fullText = _buffer[msgId]!.merge();
-        final msgSender = _buffer[msgId]!.sender;
-        final msgTimestamp = _buffer[msgId]!.timestamp;
-        
-        print('✅ Message ${msgId.substring(0, 8)} Complete! Length: ${fullText.length}');
-        
-        // Clean up buffer
-        _buffer.remove(msgId);
-        
-        // Notify callback with message ID
-        onMessageComplete(msgId, msgSender, fullText, msgTimestamp);
+        _finalizeMessage(msgId);
       }
 
       return msgId;  // Return the message ID for tracking
@@ -101,6 +128,43 @@ class MessageBuffer {
       print('Error parsing chunk: $e');
       return null;
     }
+  }
+
+  /// Reset/start the timeout timer for a message
+  void _resetTimeout(String msgId) {
+    _timeoutTimers[msgId]?.cancel();
+    _timeoutTimers[msgId] = Timer(CHUNK_TIMEOUT, () {
+      _handleTimeout(msgId);
+    });
+  }
+
+  /// Handle timeout - finalize message with whatever chunks we have
+  void _handleTimeout(String msgId) {
+    if (!_buffer.containsKey(msgId)) return;
+    
+    final msg = _buffer[msgId]!;
+    print('⏰ Timeout for message ${msgId.substring(0, 8)}... - finalizing with ${msg.receivedCount} chunks');
+    _finalizeMessage(msgId);
+  }
+
+  /// Finalize and deliver a message
+  void _finalizeMessage(String msgId) {
+    if (!_buffer.containsKey(msgId)) return;
+    
+    final msg = _buffer[msgId]!;
+    final fullText = msg.merge();
+    
+    print('✅ Message ${msgId.substring(0, 8)} finalized! Received: ${msg.receivedCount}/${msg.maxChunks ?? "?"}, Length: ${fullText.length}');
+    
+    // Cancel timeout timer
+    _timeoutTimers[msgId]?.cancel();
+    _timeoutTimers.remove(msgId);
+    
+    // Clean up buffer
+    _buffer.remove(msgId);
+    
+    // Notify callback with message ID
+    onMessageComplete(msgId, msg.sender, fullText, msg.timestamp);
   }
 
   /// Check if there are any messages currently being assembled.
@@ -111,9 +175,20 @@ class MessageBuffer {
   
   /// Check if a specific message ID is being assembled.
   bool hasPendingMessageId(String messageId) => _buffer.containsKey(messageId);
+  
+  /// Get progress info for a specific message
+  (int received, int? total)? getProgress(String messageId) {
+    final msg = _buffer[messageId];
+    if (msg == null) return null;
+    return (msg.receivedCount, msg.maxChunks);
+  }
 
   /// Clear all pending messages.
   void clear() {
+    for (final timer in _timeoutTimers.values) {
+      timer.cancel();
+    }
+    _timeoutTimers.clear();
     _buffer.clear();
   }
 }
