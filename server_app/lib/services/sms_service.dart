@@ -28,7 +28,7 @@ class SmsService {
         
         // Delay between chunks to ensure ordering
         if (i < chunks.length - 1) {
-          await Future.delayed(const Duration(milliseconds: 500));
+          await Future.delayed(const Duration(milliseconds: 1200));
         }
       }
       

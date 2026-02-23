@@ -33,11 +33,6 @@ class ChunkingService {
     // Determine Header function
     // Try to fit content.
     
-    // Let's iterate to find exact M.
-    List<String> chunks = [];
-    int currentCharsProcessed = 0;
-    int chunkIndex = 1;
-    
     // We need to simulate the split to find M first?
     // Actually, "M" is only in the FIRST chunk.
     // So subsequent chunks don't care about M.

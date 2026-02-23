@@ -317,6 +317,50 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
     _addLog("🧪 Test send triggered");
     await _processIncomingPayload("1234567890", "This is a test message from Himmel Server App.");
   }
+  
+  /// Test basic SMS sending to verify the mechanism works
+  Future<void> _testBasicSms() async {
+    _addLog("🧪 ========== BASIC SMS TEST ==========");
+    _addLog("🧪 Testing if SMS sending actually works...");
+    
+    // Show dialog to get phone number
+    final controller = TextEditingController(text: "9149194016");
+    final phoneNumber = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Test SMS"),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.phone,
+          decoration: const InputDecoration(labelText: "Enter phone number to test"),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          TextButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text("Test")),
+        ],
+      ),
+    );
+    
+    if (phoneNumber == null || phoneNumber.isEmpty) {
+      _addLog("🧪 Test cancelled");
+      return;
+    }
+    
+    final testMessage = "Himmel Test ${DateTime.now().millisecondsSinceEpoch % 10000}";
+    _addLog("🧪 Sending test to: $phoneNumber");
+    _addLog("🧪 Test message: $testMessage");
+    
+    final success = await _smsQueue.testSendSms(phoneNumber, testMessage);
+    
+    if (success) {
+      _addLog("🧪 ✅ BASIC SMS TEST PASSED - SMS is working!");
+    } else {
+      _addLog("🧪 ❌ BASIC SMS TEST FAILED - SMS sending is broken!", isError: true);
+      _addLog("🧪 Check: Is this app the default SMS app?", isError: true);
+      _addLog("🧪 Check: Are SMS permissions granted?", isError: true);
+    }
+    _addLog("🧪 ========================================");
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -510,6 +554,22 @@ class _ServerHomePageState extends State<ServerHomePage> with WidgetsBindingObse
                     ),
                   ),
                 ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Test SMS Button
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _testBasicSms,
+                  icon: const Icon(Icons.science, size: 18),
+                  label: const Text('🧪 Test Basic SMS Send'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.orange,
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 12),
