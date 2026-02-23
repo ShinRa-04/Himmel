@@ -8,7 +8,7 @@ from mobile_monitor import MobileMonitor
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Configure this if you have multiple devices connected
-SERVER_DEVICE_ID = "7eb67b3f" 
+SERVER_DEVICE_ID = "VG7P95EET8GE659H" 
 API_PROCESS_URL = "http://127.0.0.1:8000/api/process"
 
 def main():
@@ -63,16 +63,22 @@ def main():
 
     # 2. Start Monitoring
     print(f"🚀 Triggering polling for Hash: {result_hash} -> To: {phone_number} on Device: {device_id or 'Default'}")
+    print(f"DEBUG: device_id value = '{device_id}'")
     
     try:
         if device_id:
+            print(f"DEBUG: Creating MobileMonitor with device_id='{device_id}'")
             monitor = MobileMonitor(device_id=device_id)
         else:
+            print("DEBUG: Creating MobileMonitor with DEFAULT device_id")
             monitor = MobileMonitor()
-            
+        
+        print(f"DEBUG: monitor.device_id = '{monitor.device_id}'")
         monitor.poll_and_respond(result_hash, phone_number)
     except Exception as e:
+        import traceback
         print(f"❌ Error: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

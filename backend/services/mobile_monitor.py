@@ -179,6 +179,7 @@ class MobileMonitor:
         """Sends an SMS via Server App using ADB Intent."""
         try:
             logger.info(f"📤 Preparing to send to {target}...")
+            logger.info(f"DEBUG: self.device_id = '{self.device_id}'")
             
             # Escape message for ADB shell - replace problematic characters
             # Use base64 encoding to safely pass any content through ADB
@@ -186,6 +187,7 @@ class MobileMonitor:
             encoded_message = base64.b64encode(message.encode('utf-8')).decode('ascii')
             
             logger.info(f"📦 Encoded message length: {len(encoded_message)} (original: {len(message)})")
+            logger.info(f"DEBUG: Message preview: {message[:100]}...")
             if message_id:
                 logger.info(f"🔑 Using message ID: {message_id[:8]}...")
             
@@ -203,7 +205,7 @@ class MobileMonitor:
             if message_id:
                 cmd.extend(["--es", "message_id", message_id])
             
-            logger.debug(f"Executing CMD: {' '.join(cmd)}")
+            logger.info(f"DEBUG: Full ADB command: {' '.join(cmd[:10])}... (truncated)")
             
             # Capture output for debugging
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -212,6 +214,11 @@ class MobileMonitor:
                  logger.info(f"✅ ADB Command Success. Stdout: {result.stdout.strip()}")
             else:
                  logger.error(f"❌ ADB Command Failed (Code {result.returncode}). Stderr: {result.stderr.strip()}")
+                 
+        except Exception as e:
+            logger.error(f"❌ Failed to trigger SMS Intent: {e}")
+            import traceback
+            traceback.print_exc()
                  
         except Exception as e:
             logger.error(f"❌ Failed to trigger SMS Intent: {e}")
@@ -252,7 +259,9 @@ class MobileMonitor:
                     logger.warning(f"⚠️ Polling received {resp.status_code}: {resp.text}")
             except Exception as e:
                 logger.error(f"⚠️ Polling Error: {e}")
-                time.sleep(2)
+            
+            # Wait before next poll
+            time.sleep(1)
                 
         logger.error(f"⏰ Polling timeout for {result_hash}")
 
